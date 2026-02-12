@@ -74,7 +74,7 @@ def create_discord_bot(
             "!new <table>               - create a new table\n"
             "!buy <amount> [user]       - buy chips (bank if no user, or from username)\n"
             "!sell <amount> [user]      - sell chips (bank if no user, or to username)\n"
-            "!list <table>              - list all players at the table\n"
+            "!list [table]              - list all tables (or players at a specific table)\n"
             "!join <table> <username>   - register/login and join table\n"
             "!leave                     - logout from this account\n"
         )
@@ -118,7 +118,18 @@ def create_discord_bot(
         await ctx.send("You have been logged out on this account.")
 
     @bot.command(name="list")
-    async def list_cmd(ctx: commands.Context, table_name: str):
+    async def list_cmd(ctx: commands.Context, table_name: str | None = None):
+        # If no table name provided, list all tables
+        if table_name is None:
+            tables = table_repo.list_all_tables()
+            if not tables:
+                await ctx.send("No tables available.")
+            else:
+                lines = ["Available tables:"]
+                lines.extend(tables)
+                await ctx.send("\n".join(lines))
+            return
+
         if not table_repo.exists(table_name):
             await ctx.send(f"Table '{table_name}' does not exist.")
             return

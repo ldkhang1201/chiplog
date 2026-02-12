@@ -58,7 +58,7 @@ def create_telegram_bot(
             "/new <table>           - create a new table\n"
             "/buy <amount> [user]   - buy chips (bank if no user, or from username)\n"
             "/sell <amount> [user]  - sell chips (bank if no user, or to username)\n"
-            "/list                  - list all players at the table\n"
+            "/list [table]          - list all tables (or players at a specific table)\n"
             "/join <username>       - register/login with username\n"
             "/leave                 - logout from this device\n",
         )
@@ -129,8 +129,16 @@ def create_telegram_bot(
     @bot.message_handler(commands=["list"])
     def handle_list(message):
         parts = message.text.split()
+        
+        # If no table name provided, list all tables
         if len(parts) < 2:
-            bot.send_message(message.chat.id, "Usage: /list <table>")
+            tables = table_repo.list_all_tables()
+            if not tables:
+                bot.send_message(message.chat.id, "No tables available.")
+            else:
+                lines = ["Available tables:"]
+                lines.extend(tables)
+                bot.send_message(message.chat.id, "\n".join(lines))
             return
 
         _, table_name = parts[0], parts[1]

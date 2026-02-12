@@ -116,3 +116,13 @@ class SqliteTableRepository:
             rows = cur.fetchall()
             return [str(row[0]) for row in rows]
 
+    def list_all_tables(self) -> List[str]:
+        """
+        Return all table names in the system.
+        """
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT name FROM tables ORDER BY name")
+            rows = cur.fetchall()
+            return [str(row[0]) for row in rows]
+
