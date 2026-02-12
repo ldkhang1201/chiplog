@@ -58,20 +58,42 @@ class SqliteIdentityRepository(IdentityRepository):
                 return None
             return str(row[0])
 
-    def _insert_mapping(
+    def set_external_identity(
         self,
         provider: str,
         provider_user_id: str,
         user_id: str,
     ) -> None:
+        """
+        Upsert a mapping from external identity to internal user ID.
+        """
+
         with self._get_connection() as conn:
             cur = conn.cursor()
             cur.execute(
                 """
-                INSERT OR IGNORE INTO user_identities (provider, provider_user_id, user_id)
+                INSERT INTO user_identities (provider, provider_user_id, user_id)
                 VALUES (?, ?, ?)
+                ON CONFLICT (provider, provider_user_id)
+                DO UPDATE SET user_id = excluded.user_id
                 """,
                 (provider, provider_user_id, user_id),
+            )
+            conn.commit()
+
+    def clear_external_identity(
+        self,
+        provider: str,
+        provider_user_id: str,
+    ) -> None:
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                DELETE FROM user_identities
+                WHERE provider = ? AND provider_user_id = ?
+                """,
+                (provider, provider_user_id),
             )
             conn.commit()
 
@@ -82,11 +104,13 @@ class SqliteIdentityRepository(IdentityRepository):
         first_name: str,
         last_name: str,
     ) -> User:
+        # Legacy behaviour: auto-create a user bound directly to the
+        # external identity. Kept for backwards compatibility but not
+        # used in the new login-based flow.
         existing = self.find_user_by_external(provider, provider_user_id)
         if existing is not None:
             return existing
 
-        # Use the provider_user_id as the logical internal ID for now.
         user = User(
             id=str(provider_user_id),
             first_name=first_name,
@@ -94,8 +118,7 @@ class SqliteIdentityRepository(IdentityRepository):
             balance=0,
         )
         self._user_repo.add_user(user)
-
-        self._insert_mapping(provider, provider_user_id, user.id)
+        self.set_external_identity(provider, provider_user_id, user.id)
 
         stored_user = self._user_repo.get_user(user.id)
         return stored_user or user
@@ -109,4 +132,26 @@ class SqliteIdentityRepository(IdentityRepository):
         if user_id is None:
             return None
         return self._user_repo.get_user(user_id)
+
+    def get_external_ids_for_user(
+        self,
+        provider: str,
+        user_id: str,
+    ) -> list[str]:
+        """
+        Return all external IDs for the given internal user ID and provider.
+        """
+
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT provider_user_id
+                FROM user_identities
+                WHERE provider = ? AND user_id = ?
+                """,
+                (provider, user_id),
+            )
+            rows = cur.fetchall()
+            return [str(row[0]) for row in rows]
 

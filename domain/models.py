@@ -15,3 +15,18 @@ class User:
     last_name: str
     balance: int
 
+
+@dataclass
+class Account:
+    """
+    Authentication identity for a player on the poker platform.
+
+    Multiple external identities (Telegram/Discord/Web) can be linked
+    to the same account via the IdentityRepository so that a player
+    can use the same username/password across channels.
+    """
+
+    id: str
+    username: str
+    password_hash: str
+

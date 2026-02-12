@@ -3,8 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from domain.models import User
-from domain.repositories import IdentityRepository, UserRepository
+import bcrypt
+from uuid import uuid4
+
+from domain.models import Account, User
+from domain.repositories import AccountRepository, IdentityRepository, UserRepository
 
 
 @dataclass
@@ -55,6 +58,93 @@ def _validate_positive_amount(amount: int) -> Optional[str]:
     return None
 
 
+def _get_logged_in_user(
+    external_ctx: ExternalContext,
+    identity_repo: IdentityRepository,
+    user_repo: UserRepository,
+) -> Optional[User]:
+    """
+    Resolve the currently logged-in user for an external identity.
+
+    Returns None if the external identity is not associated with any
+    account/user (i.e. the caller must /join first).
+    """
+
+    return identity_repo.find_user_by_external(
+        external_ctx.provider,
+        external_ctx.provider_user_id,
+    )
+
+
+def register_or_login_user(
+    external_ctx: ExternalContext,
+    username: str,
+    password: str,
+    account_repo: AccountRepository,
+    identity_repo: IdentityRepository,
+    user_repo: UserRepository,
+) -> OperationResult:
+    """
+    Register a new platform account or log in to an existing one, then
+    associate the external identity with that account.
+    """
+
+    existing = account_repo.get_by_username(username)
+    if existing is None:
+        # Registration path.
+        account_id = uuid4().hex
+        password_hash = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode(
+            "utf-8"
+        )
+        account = Account(id=account_id, username=username, password_hash=password_hash)
+        account_repo.create_account(account)
+
+        # Create a corresponding User with zero balance.
+        # We no longer care about first/last name, only username.
+        user_repo.add_user(
+            User(
+                id=account_id,
+                first_name=username,
+                last_name="",
+                balance=0,
+            )
+        )
+    else:
+        # Login path: verify password.
+        if not bcrypt.checkpw(
+            password.encode("utf-8"), existing.password_hash.encode("utf-8")
+        ):
+            return OperationResult(success=False, error_message="Invalid username or password.")
+
+        account_id = existing.id
+
+    # Link this external identity to the account.
+    identity_repo.set_external_identity(
+        external_ctx.provider,
+        external_ctx.provider_user_id,
+        account_id,
+    )
+
+    return OperationResult(success=True)
+
+
+def logout_external_identity(
+    external_ctx: ExternalContext,
+    identity_repo: IdentityRepository,
+) -> OperationResult:
+    """
+    Remove any association between this external identity and a user
+    account. The account and its balance remain; the user simply needs
+    to /join again to play.
+    """
+
+    identity_repo.clear_external_identity(
+        external_ctx.provider,
+        external_ctx.provider_user_id,
+    )
+    return OperationResult(success=True)
+
+
 def buy_chips_from_bank(
     external_ctx: ExternalContext,
     amount: int,
@@ -73,19 +163,18 @@ def buy_chips_from_bank(
     if error:
         return OperationResult(success=False, error_message=error)
 
-    user = identity_repo.get_or_create_user_from_external(
-        external_ctx.provider,
-        external_ctx.provider_user_id,
-        external_ctx.first_name,
-        external_ctx.last_name,
-    )
+    user = _get_logged_in_user(external_ctx, identity_repo, user_repo)
+    if user is None:
+        return OperationResult(
+            success=False,
+            error_message="You must /join <username> <password> before buying chips.",
+        )
 
     user_repo.update_balance(user.id, -amount)
 
-    # Broadcast to all users.
-    users = user_repo.get_all_users()
-    text = f"{user.first_name} {user.last_name} buys {amount}"
-    broadcasts = [BroadcastMessage(user_id=u.id, text=text) for u in users]
+    # Message uses the platform username (stored in `first_name`).
+    text = f"{user.first_name} buys {amount}"
+    broadcasts = [BroadcastMessage(user_id=user.id, text=text)]
 
     return OperationResult(success=True, broadcasts=broadcasts)
 
@@ -107,19 +196,126 @@ def sell_chips_to_bank(
     if error:
         return OperationResult(success=False, error_message=error)
 
-    user = identity_repo.get_or_create_user_from_external(
-        external_ctx.provider,
-        external_ctx.provider_user_id,
-        external_ctx.first_name,
-        external_ctx.last_name,
-    )
+    user = _get_logged_in_user(external_ctx, identity_repo, user_repo)
+    if user is None:
+        return OperationResult(
+            success=False,
+            error_message="You must /join <username> <password> before selling chips.",
+        )
 
     user_repo.update_balance(user.id, amount)
 
-    # Broadcast to all users.
-    users = user_repo.get_all_users()
-    text = f"{user.first_name} {user.last_name} sells {amount}"
-    broadcasts = [BroadcastMessage(user_id=u.id, text=text) for u in users]
+    text = f"{user.first_name} sells {amount}"
+    broadcasts = [BroadcastMessage(user_id=user.id, text=text)]
+
+    return OperationResult(success=True, broadcasts=broadcasts)
+
+
+def buy_chips_from_user(
+    external_ctx: ExternalContext,
+    amount: int,
+    counterparty_username: str,
+    account_repo: AccountRepository,
+    identity_repo: IdentityRepository,
+    user_repo: UserRepository,
+) -> OperationResult:
+    """
+    Buy chips from another player identified by username.
+
+    - The caller (buyer) must be logged in.
+    - The counterparty username must exist.
+    - The buyer's balance is decreased by `amount`.
+    - The seller's balance is increased by `amount`.
+    """
+
+    error = _validate_positive_amount(amount)
+    if error:
+        return OperationResult(success=False, error_message=error)
+
+    buyer = _get_logged_in_user(external_ctx, identity_repo, user_repo)
+    if buyer is None:
+        return OperationResult(
+            success=False,
+            error_message="You must /join <username> <password> before buying from another player.",
+        )
+
+    seller_account = account_repo.get_by_username(counterparty_username)
+    if seller_account is None:
+        return OperationResult(success=False, error_message="Seller username not found.")
+
+    seller = user_repo.get_user(seller_account.id)
+    if seller is None:
+        return OperationResult(success=False, error_message="Seller user not found.")
+
+    if buyer.id == seller.id:
+        return OperationResult(
+            success=False,
+            error_message="You cannot buy chips from yourself.",
+        )
+
+    user_repo.update_balance(buyer.id, -amount)
+    user_repo.update_balance(seller.id, amount)
+
+    # Single, neutral message: buyer does something to seller.
+    text = f"{buyer.first_name} buys {amount} from {seller.first_name}"
+    broadcasts = [
+        BroadcastMessage(user_id=buyer.id, text=text),
+        BroadcastMessage(user_id=seller.id, text=text),
+    ]
+
+    return OperationResult(success=True, broadcasts=broadcasts)
+
+
+def sell_chips_to_user(
+    external_ctx: ExternalContext,
+    amount: int,
+    counterparty_username: str,
+    account_repo: AccountRepository,
+    identity_repo: IdentityRepository,
+    user_repo: UserRepository,
+) -> OperationResult:
+    """
+    Sell chips to another player identified by username.
+
+    - The caller (seller) must be logged in.
+    - The counterparty username must exist.
+    - The buyer's balance is decreased by `amount`.
+    - The seller's balance is increased by `amount`.
+    """
+
+    error = _validate_positive_amount(amount)
+    if error:
+        return OperationResult(success=False, error_message=error)
+
+    seller = _get_logged_in_user(external_ctx, identity_repo, user_repo)
+    if seller is None:
+        return OperationResult(
+            success=False,
+            error_message="You must /join <username> <password> before selling to another player.",
+        )
+
+    buyer_account = account_repo.get_by_username(counterparty_username)
+    if buyer_account is None:
+        return OperationResult(success=False, error_message="Buyer username not found.")
+
+    buyer = user_repo.get_user(buyer_account.id)
+    if buyer is None:
+        return OperationResult(success=False, error_message="Buyer user not found.")
+
+    if buyer.id == seller.id:
+        return OperationResult(
+            success=False,
+            error_message="You cannot sell chips to yourself.",
+        )
+
+    user_repo.update_balance(buyer.id, -amount)
+    user_repo.update_balance(seller.id, amount)
+
+    text = f"{seller.first_name} sells {amount} to {buyer.first_name}"
+    broadcasts = [
+        BroadcastMessage(user_id=seller.id, text=text),
+        BroadcastMessage(user_id=buyer.id, text=text),
+    ]
 
     return OperationResult(success=True, broadcasts=broadcasts)
 
@@ -140,12 +336,12 @@ def initiate_buy_from_player(
     if error:
         return InitiateBuyFromResult(success=False, error_message=error)
 
-    source_user = identity_repo.get_or_create_user_from_external(
-        external_ctx.provider,
-        external_ctx.provider_user_id,
-        external_ctx.first_name,
-        external_ctx.last_name,
-    )
+    source_user = _get_logged_in_user(external_ctx, identity_repo, user_repo)
+    if source_user is None:
+        return InitiateBuyFromResult(
+            success=False,
+            error_message="You must /join <username> <password> before buying from another player.",
+        )
 
     all_users = user_repo.get_all_users()
     candidates = [u for u in all_users if u.id != source_user.id]
@@ -193,8 +389,8 @@ def confirm_buy_from_player(
 
     users = user_repo.get_all_users()
     text = (
-        f"{source.first_name} {source.last_name} buys {amount} "
-        f"from {target.first_name} {target.last_name}"
+        f"{source.first_name} buys {amount} "
+        f"from {target.first_name}"
     )
     broadcasts = [BroadcastMessage(user_id=u.id, text=text) for u in users]
 
