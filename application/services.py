@@ -159,7 +159,7 @@ def buy_chips_from_bank(
     if user is None:
         return OperationResult(
             success=False,
-            error_message="You must /join <username> <password> before buying chips.",
+            error_message="You must /join <table> <username> before buying chips.",
         )
 
     user_repo.update_balance(user.id, -amount)
@@ -192,7 +192,7 @@ def sell_chips_to_bank(
     if user is None:
         return OperationResult(
             success=False,
-            error_message="You must /join <username> <password> before selling chips.",
+            error_message="You must /join <table> <username> before selling chips.",
         )
 
     user_repo.update_balance(user.id, amount)
@@ -228,7 +228,7 @@ def buy_chips_from_user(
     if buyer is None:
         return OperationResult(
             success=False,
-            error_message="You must /join <username> <password> before buying from another player.",
+            error_message="You must /join <table> <username> before buying from another player.",
         )
 
     seller_account = account_repo.get_by_username(counterparty_username)
@@ -283,7 +283,7 @@ def sell_chips_to_user(
     if seller is None:
         return OperationResult(
             success=False,
-            error_message="You must /join <username> <password> before selling to another player.",
+            error_message="You must /join <table> <username> before selling to another player.",
         )
 
     buyer_account = account_repo.get_by_username(counterparty_username)
@@ -332,7 +332,7 @@ def initiate_buy_from_player(
     if source_user is None:
         return InitiateBuyFromResult(
             success=False,
-            error_message="You must /join <username> <password> before buying from another player.",
+            error_message="You must /join <table> <username> before buying from another player.",
         )
 
     all_users = user_repo.get_all_users()

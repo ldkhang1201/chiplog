@@ -60,15 +60,15 @@ def create_telegram_bot(
             "/sell <amount> [user]  - sell chips (bank if no user, or to username)\n"
             "/list [table]          - list all tables (or players at a specific table)\n"
             "/me                    - show your username, tables, and balance\n"
-            "/join <username>       - register/login with username\n"
-            "/leave                 - logout from this device\n",
+            "/join <table> <username> - register/login and join table\n"
+            "/leave                 - logout from this account\n",
         )
 
     @bot.message_handler(commands=["new"])
     def handle_new_table(message):
         parts = message.text.split()
         if len(parts) < 2:
-            bot.send_message(message.chat.id, "Usage: /new <table_name>")
+            bot.send_message(message.chat.id, "Usage: /new <table>")
             return
 
         _, table_name = parts[0], parts[1]
@@ -125,7 +125,7 @@ def create_telegram_bot(
     def handle_leave(message):
         external_ctx = _build_external_context(message)
         logout_external_identity(external_ctx, identity_repo)
-        bot.send_message(message.chat.id, "You have been logged out on this device.")
+        bot.send_message(message.chat.id, "You have been logged out on this account.")
 
     @bot.message_handler(commands=["me"])
     def handle_me(message):
